@@ -1,0 +1,4 @@
+.env
+envs/.env.*
+!envs/*.example
+*.bak

@@ -1,0 +1,22 @@
+{
+  "name": "creditflow-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "preview": "nuxt preview",
+    "generate": "nuxt generate",
+    "typecheck": "nuxt typecheck"
+  },
+  "dependencies": {
+    "nuxt": "^3.17.5",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.7.3",
+    "vue-tsc": "^3.3.9"
+  }
+}

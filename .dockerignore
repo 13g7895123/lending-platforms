@@ -1,0 +1,12 @@
+.git
+.gitignore
+docker/.env
+docker/envs/.env.*
+!docker/envs/*.example
+frontend/node_modules
+frontend/.nuxt
+frontend/.output
+frontend/.data
+backend/bin
+*.log
+*.bak

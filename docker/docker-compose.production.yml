@@ -1,0 +1,9 @@
+services:
+  db:
+    restart: always
+
+  api:
+    restart: always
+
+  frontend:
+    restart: always

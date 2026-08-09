@@ -1,0 +1,14 @@
+node_modules/
+frontend/.nuxt/
+frontend/.output/
+frontend/.data/
+backend/bin/
+*.test
+
+.env
+.env.*
+!.env*.example
+docker/.env
+docker/envs/.env.*
+!docker/envs/.env.*.example
+*.bak

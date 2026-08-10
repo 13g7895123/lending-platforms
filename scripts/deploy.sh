@@ -41,7 +41,7 @@ while (($#)); do
   shift
 done
 
-require_command docker
+require_docker_compose
 require_environment "$environment"
 prepare_env_file
 
@@ -156,4 +156,4 @@ wait_for_database 45
 wait_for_api 45
 
 log "部署完成：$(grep '^FRONTEND_PORT=' "$ENV_FILE" | cut -d= -f2- || echo 3000)"
-log "查看狀態：docker compose --env-file docker/.env -f docker/docker-compose.yml ps"
+log "查看狀態：${COMPOSE_COMMAND[*]} --env-file docker/.env -f docker/docker-compose.yml ps"

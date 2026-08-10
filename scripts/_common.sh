@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOCKER_DIR="$PROJECT_ROOT/docker"
 ENV_DIR="$DOCKER_DIR/envs"
+COMPOSE_COMMAND=()
 
 log() {
   printf '[creditflow] %s\n' "$*"
@@ -18,6 +19,18 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "找不到必要指令：$1"
+}
+
+require_docker_compose() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    COMPOSE_COMMAND=(docker compose)
+    return 0
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_COMMAND=(docker-compose)
+    return 0
+  fi
+  fail "找不到 Docker Compose：請安裝 docker compose 或 docker-compose"
 }
 
 require_environment() {
@@ -47,7 +60,7 @@ prepare_env_file() {
 }
 
 compose() {
-  docker compose --env-file "$DOCKER_DIR/.env" "${COMPOSE_FILES[@]}" "$@"
+  "${COMPOSE_COMMAND[@]}" --env-file "$DOCKER_DIR/.env" "${COMPOSE_FILES[@]}" "$@"
 }
 
 wait_for_database() {

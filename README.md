@@ -15,7 +15,7 @@ scripts/               deploy / migrate / seed
 
 ## 啟動環境
 
-需要 Docker Compose v2。第一次啟動 develop 環境時，部署腳本會從 example 建立 runtime env；本機展示可直接讓腳本產生弱敏感值的替代值：
+需要 Docker Compose v1.29+（`docker-compose`）或 v2（`docker compose`）。第一次啟動 develop 環境時，部署腳本會從 example 建立 runtime env；本機展示可直接讓腳本產生弱敏感值的替代值：
 
 ```bash
 ./scripts/deploy.sh develop --auto-secrets
@@ -43,11 +43,11 @@ production 部署：
 ## 常用操作
 
 ```bash
-docker compose --env-file docker/.env \
+docker-compose --env-file docker/.env \
   -f docker/docker-compose.yml \
   -f docker/docker-compose.develop.yml ps
 
-docker compose --env-file docker/.env \
+docker-compose --env-file docker/.env \
   -f docker/docker-compose.yml \
   -f docker/docker-compose.develop.yml logs -f api
 ```

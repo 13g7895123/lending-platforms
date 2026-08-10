@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/_common.sh"
 
 environment="${1:-}"
 [[ -n "$environment" ]] || fail "用法：./scripts/migrate.sh <develop|production>"
-require_command docker
+require_docker_compose
 require_environment "$environment"
 prepare_env_file
 

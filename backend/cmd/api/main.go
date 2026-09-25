@@ -14,20 +14,57 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type config struct {
-	port           string
-	databaseURL    string
-	allowedOrigins string
-	connectTimeout time.Duration
-	requestTimeout time.Duration
+	port                   string
+	databaseURL            string
+	allowedOrigins         string
+	secureCookies          bool
+	trustProxy             bool
+	appEnv                 string
+	piiKey                 string
+	storageRoot            string
+	publicBaseURL          string
+	rateLimitPerMinute     int
+	authRateLimitPerMinute int
+	connectTimeout         time.Duration
+	requestTimeout         time.Duration
 }
 
 type apiServer struct {
 	db             *pgxpool.Pool
 	allowedOrigins string
+	secureCookies  bool
+	trustProxy     bool
+	pii            *piiCipher
+	storage        *documentStorage
+	ocr            *ocrEngine
+	mailer         *mailer
+	// 信件中連結使用的對外網址（瀏覽器可達的位址，非容器內位址）
+	publicBaseURL string
+	limiter       *rateLimiter
+	authLimiter   *rateLimiter
+}
+
+// dbExecutor 讓同一段邏輯可在連線池或交易中執行。
+// pgxpool.Pool 與 pgx.Tx 都滿足此介面。
+type dbExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// dbQuerier 是只需查詢的版本。
+type dbQuerier interface {
+	Query(ctx context.Context, sql string, arguments ...any) (pgx.Rows, error)
+}
+
+// dbExecutorQuerier 同時需要讀寫，用於必須在 transaction 內完成的邏輯。
+type dbExecutorQuerier interface {
+	dbExecutor
+	dbQuerier
 }
 
 type loan struct {
@@ -39,6 +76,7 @@ type loan struct {
 	TotalInstallments int     `json:"totalInstallments"`
 	Status            string  `json:"status"`
 	StatusTone        string  `json:"statusTone"`
+	MonthlyPayment    int64   `json:"monthlyPayment"`
 }
 
 type dashboardResponse struct {
@@ -99,11 +137,57 @@ func main() {
 	}
 	defer pool.Close()
 
-	app := &apiServer{db: pool, allowedOrigins: cfg.allowedOrigins}
-	handler := app.routes()
+	pii, err := loadPIICipher(cfg, logger)
+	if err != nil {
+		logger.Error("PII encryption setup failed", "error", err)
+		os.Exit(1)
+	}
+
+	storage, err := newDocumentStorage(cfg.storageRoot)
+	if err != nil {
+		logger.Error("document storage setup failed", "error", err, "root", cfg.storageRoot)
+		os.Exit(1)
+	}
+
+	app := &apiServer{
+		db:             pool,
+		allowedOrigins: cfg.allowedOrigins,
+		secureCookies:  cfg.secureCookies,
+		trustProxy:     cfg.trustProxy,
+		pii:            pii,
+		storage:        storage,
+		mailer:         newMailer(logger),
+		publicBaseURL:  cfg.publicBaseURL,
+		limiter:        newRateLimiter(cfg.rateLimitPerMinute, cfg.rateLimitPerMinute, time.Minute),
+		authLimiter:    newRateLimiter(cfg.authRateLimitPerMinute, cfg.authRateLimitPerMinute, time.Minute),
+	}
+
+	// PII 遷移失敗不阻止啟動：欄位可能尚未由 migration 建立（deploy.sh 先啟容器後 migrate），
+	// 且此為一次性資料搬遷，不影響新資料的加密寫入路徑。
+	switch migrated, err := app.migratePlaintextPII(context.Background()); {
+	case err != nil:
+		logger.Warn("PII migration skipped", "error", err)
+	case migrated < 0:
+		logger.Info("PII columns not ready yet; migration will run on the next start")
+	case migrated > 0:
+		logger.Info("encrypted existing plaintext PII", "rows", migrated)
+	}
+
+	stopCleanup := app.startSessionCleanup(logger)
+	defer stopCleanup()
+
+	stopSweep := app.startOverdueSweep(logger)
+	defer stopSweep()
+
+	stopDeadlineSweep := app.startFundingDeadlineSweep(logger)
+	defer stopDeadlineSweep()
+
+	stopOCRWorker := app.startOCRWorker(logger)
+	defer stopOCRWorker()
+
 	server := &http.Server{
 		Addr:              ":" + cfg.port,
-		Handler:           handler,
+		Handler:           app.routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       cfg.requestTimeout,
 		WriteTimeout:      cfg.requestTimeout,
@@ -123,9 +207,18 @@ func loadConfig() config {
 	return config{
 		port:           env("PORT", "8080"),
 		databaseURL:    env("DATABASE_URL", "postgres://creditflow:creditflow@localhost:5432/creditflow?sslmode=disable"),
-		allowedOrigins: env("CORS_ALLOWED_ORIGINS", "*"),
-		connectTimeout: time.Duration(connectSeconds) * time.Second,
-		requestTimeout: time.Duration(requestSeconds) * time.Second,
+		allowedOrigins: env("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		secureCookies:  strings.EqualFold(env("SECURE_COOKIES", "false"), "true"),
+		// 本服務只經由 Nuxt proxy 對外，故預設信任 X-Forwarded-For
+		trustProxy:             strings.EqualFold(env("TRUST_PROXY", "true"), "true"),
+		appEnv:                 env("APP_ENV", "develop"),
+		piiKey:                 os.Getenv("PII_ENCRYPTION_KEY"),
+		storageRoot:            env("DOCUMENT_STORAGE_ROOT", "/var/lib/creditflow/documents"),
+		publicBaseURL:          env("PUBLIC_BASE_URL", "http://localhost:3000"),
+		rateLimitPerMinute:     envInt("RATE_LIMIT_PER_MINUTE", 300),
+		authRateLimitPerMinute: envInt("AUTH_RATE_LIMIT_PER_MINUTE", 60),
+		connectTimeout:         time.Duration(connectSeconds) * time.Second,
+		requestTimeout:         time.Duration(requestSeconds) * time.Second,
 	}
 }
 
@@ -158,13 +251,95 @@ func connectDatabase(cfg config) (*pgxpool.Pool, error) {
 	}
 }
 
+// startSessionCleanup 定期清掉過期 session，避免 sessions 表無限成長。
+func (s *apiServer) startSessionCleanup(logger *slog.Logger) func() {
+	ticker := time.NewTicker(time.Hour)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if _, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE expires_at < NOW()`); err != nil {
+					logger.Warn("session cleanup failed", "error", err)
+				}
+				cancel()
+			case <-done:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func (s *apiServer) routes() http.Handler {
 	mux := http.NewServeMux()
+
+	// 公開端點
 	mux.HandleFunc("/health", s.health)
-	mux.HandleFunc("/v1/dashboard", s.dashboard)
+	mux.HandleFunc("/v1/auth/csrf", s.issueCSRFToken)
+	mux.HandleFunc("/v1/auth/register", s.rateLimitAuth("register", s.register))
+	mux.HandleFunc("/v1/auth/login", s.rateLimitAuth("login", s.login))
+	mux.HandleFunc("/v1/auth/logout", s.logout)
+	mux.HandleFunc("/v1/auth/verify-email", s.verifyEmail)
+	mux.HandleFunc("/v1/auth/forgot-password", s.rateLimitAuth("forgot", s.forgotPassword))
+	mux.HandleFunc("/v1/auth/reset-password", s.rateLimitAuth("reset", s.resetPassword))
 	mux.HandleFunc("/v1/market/listings", s.marketListings)
-	mux.HandleFunc("/v1/applications", s.applications)
-	return s.withCORS(s.withRequestID(mux))
+	mux.HandleFunc("/v1/listings", s.optionalAuth(s.marketplaceListings))
+
+	// 需登入
+	mux.HandleFunc("/v1/auth/me", s.requireAuth(s.me))
+	mux.HandleFunc("/v1/auth/resend-verification", s.requireAuth(s.resendVerification))
+	mux.HandleFunc("/v1/dashboard", s.requireAuth(s.dashboard))
+	mux.HandleFunc("/v1/applications", s.requireAuth(s.applications))
+	mux.HandleFunc("/v1/applications/", s.requireAuth(s.applicationSubroutes))
+	mux.HandleFunc("/v1/documents/", s.requireAuth(s.documentRoutes))
+	mux.HandleFunc("/v1/loans/", s.requireAuth(s.loanRoutes))
+	mux.HandleFunc("/v1/listings/", s.requireRole(roleInvestor, s.listingRoutes))
+	mux.HandleFunc("/v1/investments", s.requireRole(roleInvestor, s.myInvestments))
+	mux.HandleFunc("/v1/investments/top-up", s.requireRole(roleInvestor, s.topUpBalance))
+	mux.HandleFunc("/v1/investments/distributions", s.requireRole(roleInvestor, s.myDistributions))
+
+	// 需 reviewer 角色
+	mux.HandleFunc("/v1/admin/applications", s.requireRole(roleReviewer, s.adminApplications))
+	mux.HandleFunc("/v1/admin/applications/", s.requireRole(roleReviewer, s.reviewApplication))
+	mux.HandleFunc("/v1/admin/overdue", s.requireRole(roleReviewer, s.adminOverdue))
+	mux.HandleFunc("/v1/admin/listings/", s.requireRole(roleReviewer, s.adminListingRoutes))
+
+	// 由外而內：限流 → CORS（preflight 需先回應）→ CSRF → request ID
+	return s.withRateLimit(s.limiter, s.withCORS(s.withCSRF(s.withRequestID(mux))))
+}
+
+// applicationSubroutes 分派 /v1/applications/{id}/... 的請求。
+func (s *apiServer) applicationSubroutes(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/applications/"), "/")
+	applicationID, suffix, found := strings.Cut(rest, "/")
+	if !found || applicationID == "" || suffix != "documents" {
+		writeError(w, http.StatusNotFound, "route not found")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.listDocuments(w, r, applicationID)
+	case http.MethodPost:
+		s.uploadDocument(w, r, applicationID)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// applications 依方法分派：GET 查自己的申請，POST 建立新申請。
+func (s *apiServer) applications(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.myApplications(w, r)
+	case http.MethodPost:
+		s.createApplication(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *apiServer) health(w http.ResponseWriter, r *http.Request) {
@@ -183,49 +358,6 @@ func (s *apiServer) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "ready"})
-}
-
-func (s *apiServer) dashboard(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	var response dashboardResponse
-	if err := s.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount), 0) FROM loans WHERE status <> '已結清'`).Scan(&response.Summary.TotalBorrowed); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load dashboard summary")
-		return
-	}
-	response.Summary.MonthlyPayment = 14982
-	response.Summary.CreditScore = 782
-	response.Summary.RepaymentRate = 97.6
-
-	rows, err := s.db.Query(ctx, `
-		SELECT id, product, amount, annual_rate, paid_installments, total_installments, status, status_tone
-		FROM loans
-		ORDER BY created_at DESC, id DESC
-	`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load loans")
-		return
-	}
-	defer rows.Close()
-	response.Loans = make([]loan, 0)
-	for rows.Next() {
-		var item loan
-		if err := rows.Scan(&item.ID, &item.Product, &item.Amount, &item.Rate, &item.PaidInstallments, &item.TotalInstallments, &item.Status, &item.StatusTone); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to decode loans")
-			return
-		}
-		response.Loans = append(response.Loans, item)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read loans")
-		return
-	}
-	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *apiServer) marketListings(w http.ResponseWriter, r *http.Request) {
@@ -256,51 +388,11 @@ func (s *apiServer) marketListings(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read market listings")
+		return
+	}
 	writeJSON(w, http.StatusOK, items)
-}
-
-func (s *apiServer) applications(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var request applicationRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err := decoder.Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if err := validateApplication(request); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-
-	documents, err := json.Marshal(request.Documents)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid documents")
-		return
-	}
-	id := newApplicationID()
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	var createdAt time.Time
-	err = s.db.QueryRow(ctx, `
-		INSERT INTO applications (
-			id, product, amount, term_months, purpose, applicant_name, id_number,
-			phone, email, job, employment_years, annual_income, monthly_expenses,
-			housing, note, documents, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'pending')
-		RETURNING created_at
-	`, id, request.Product, request.Amount, request.TermMonths, request.Purpose, request.ApplicantName,
-		request.IDNumber, request.Phone, request.Email, request.Job, request.EmploymentYears,
-		request.AnnualIncome, request.MonthlyExpenses, request.Housing, request.Note, documents).Scan(&createdAt)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create application")
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, applicationResponse{ID: id, Status: "pending", CreatedAt: createdAt})
 }
 
 func validateApplication(request applicationRequest) error {
@@ -337,11 +429,15 @@ func (s *apiServer) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := s.allowedOrigins
 		if origin == "" {
-			origin = "*"
+			origin = "http://localhost:3000"
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, "+csrfHeaderName)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		// 帶 cookie 的跨來源請求要求 origin 不得為萬用字元
+		if origin != "*" {
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
 		w.Header().Set("Vary", "Origin")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -362,6 +458,25 @@ func (s *apiServer) withRequestID(next http.Handler) http.Handler {
 	})
 }
 
+// decodeJSON 解析請求主體，失敗時已回應錯誤並回傳 false。
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := decoder.Decode(target); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
+}
+
+// isUniqueViolation 判斷是否為 PostgreSQL 唯一鍵衝突（23505）。
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -370,6 +485,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// writeInternalError 回傳通用訊息給客戶端，同時把真正的原因寫進日誌。
+//
+// 500 回應刻意不揭露內部細節，但若伺服器端也沒有紀錄，任何故障都只能靠猜測排查。
+func writeInternalError(w http.ResponseWriter, message string, cause error) {
+	slog.Error("request failed", "message", message, "error", cause)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": message})
 }
 
 func env(key, fallback string) string {
@@ -385,4 +508,15 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// adminListingRoutes 分派 /v1/admin/listings/{id}/... 的請求。
+func (s *apiServer) adminListingRoutes(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/admin/listings/"), "/")
+	listingID, suffix, found := strings.Cut(rest, "/")
+	if !found || listingID == "" || suffix != "cancel" {
+		writeError(w, http.StatusNotFound, "route not found")
+		return
+	}
+	s.cancelListingByReviewer(w, r, listingID)
 }

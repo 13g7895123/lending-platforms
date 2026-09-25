@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支的新 push 會取消尚在執行的舊 workflow
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.22"
+  NODE_VERSION: "22"
+
+jobs:
+  backend:
+    name: 後端（格式、vet、單元測試）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: 檢查 gofmt
+        working-directory: backend
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "以下檔案格式不符："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        working-directory: backend
+        run: go build ./...
+
+      - name: go vet
+        working-directory: backend
+        run: |
+          go vet ./...
+          go vet -tags=integration ./...
+
+      - name: 單元測試
+        working-directory: backend
+        run: go test -race -count=1 ./...
+
+  integration:
+    name: 整合測試（真實 PostgreSQL）
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: creditflow_test
+          POSTGRES_USER: creditflow
+          POSTGRES_PASSWORD: ci-test-password
+        ports:
+          - 5432:5432
+        # 等 DB 就緒再開始，避免測試剛啟動就連線失敗
+        options: >-
+          --health-cmd "pg_isready -U creditflow -d creditflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      # 整合測試會自行套用 backend/migrations 下的所有 SQL
+      - name: 整合測試
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://creditflow:ci-test-password@localhost:5432/creditflow_test?sslmode=disable
+          PII_ENCRYPTION_KEY: Y3JlZGl0Zmxvdy1kZXZlbG9wLW9ubHkta2V5LTMyYiE=
+        run: go test -tags=integration -race -count=1 ./...
+
+      # 若 TEST_DATABASE_URL 因故失效，測試會「跳過」而非失敗。
+      # 這一步確認整合測試真的跑了，避免 CI 綠燈卻什麼都沒驗證。
+      - name: 確認整合測試確實執行
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://creditflow:ci-test-password@localhost:5432/creditflow_test?sslmode=disable
+          PII_ENCRYPTION_KEY: Y3JlZGl0Zmxvdy1kZXZlbG9wLW9ubHkta2V5LTMyYiE=
+        run: |
+          output="$(go test -tags=integration -count=1 -v -run TestIntegrationApplicationToLoanWorkflow ./cmd/api/ 2>&1)"
+          echo "$output"
+          if echo "$output" | grep -q "integration tests skipped"; then
+            echo "::error::整合測試被跳過，資料庫連線可能失效"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q -- "--- PASS: TestIntegrationApplicationToLoanWorkflow"; then
+            echo "::error::找不到預期的整合測試執行紀錄"
+            exit 1
+          fi
+
+  frontend:
+    name: 前端（typecheck、build）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安裝依賴
+        working-directory: frontend
+        run: npm ci
+
+      - name: 型別檢查
+        working-directory: frontend
+        run: npx nuxt typecheck
+
+      - name: 建置
+        working-directory: frontend
+        run: npx nuxt build
+
+  # 端到端：以 docker compose 啟動完整環境並跑 verify-flow.sh
+  end-to-end:
+    name: 端到端（docker compose）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 啟動 develop 環境
+        run: ./scripts/deploy.sh develop --auto-secrets
+
+      - name: 端到端驗證
+        # develop 的 compose 會一併啟動 MailHog，因此信件流程也會被驗證
+        run: ./scripts/verify-flow.sh
+
+      - name: 失敗時輸出服務日誌
+        if: failure()
+        run: |
+          docker compose --env-file docker/.env \
+            -f docker/docker-compose.yml \
+            -f docker/docker-compose.develop.yml logs --tail=100

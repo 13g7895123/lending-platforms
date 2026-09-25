@@ -12,3 +12,7 @@ docker/.env
 docker/envs/.env.*
 !docker/envs/.env.*.example
 *.bak
+
+# Go 編譯產物
+backend/api
+backend/creditflow-api

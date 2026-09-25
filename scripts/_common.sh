@@ -55,8 +55,33 @@ prepare_env_file() {
     cp "$EXAMPLE_FILE" "$ENV_FILE"
     log "已從樣板建立 runtime env：$ENV_FILE"
     log "敏感值目前是 placeholder；部署時請使用 --auto-secrets 或自行修改"
+  else
+    sync_env_with_example
   fi
   cp "$ENV_FILE" "$DOCKER_DIR/.env"
+}
+
+# sync_env_with_example 把樣板新增的鍵補進既有 runtime env。
+#
+# 沒有這一步，新版程式碼新增的環境變數永遠不會出現在既有環境的 runtime env
+# （prepare_env_file 只在檔案不存在時才複製），部署後會以預設值靜默啟動或直接失敗。
+# 既有鍵的值一律保留，不覆蓋使用者自訂內容。
+sync_env_with_example() {
+  local added=()
+  local line key
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    if ! grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      printf '%s\n' "$line" >> "$ENV_FILE"
+      added+=("$key")
+    fi
+  done < "$EXAMPLE_FILE"
+
+  if (( ${#added[@]} > 0 )); then
+    log "已從樣板補入新環境變數：${added[*]}"
+    log "如含敏感值，請使用 --auto-secrets 或手動填入 $ENV_FILE"
+  fi
 }
 
 compose() {
@@ -93,4 +118,24 @@ sql_in_db() {
   local sql_file="$1"
   [[ -f "$sql_file" ]] || fail "找不到 SQL 檔案：$sql_file"
   compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$sql_file"
+}
+
+# sql_query <sql> → 以無標頭、無對齊的格式印出查詢結果。
+# 供腳本讀取單一值（例如版本表的內容）使用。
+sql_query() {
+  local statement="$1"
+  compose exec -T db sh -c \
+    'psql -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<<"$statement"
+}
+
+# sql_exec <sql> → 執行不需回傳值的敘述。
+sql_exec() {
+  local statement="$1"
+  compose exec -T db sh -c \
+    'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<<"$statement" >/dev/null
+}
+
+# sql_literal <value> → 轉義為 SQL 字串常量（單引號加倍）。
+sql_literal() {
+  printf "'%s'" "${1//\'/\'\'}"
 }

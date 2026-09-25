@@ -95,14 +95,23 @@ generate_secret() {
   local key="$1"
   local length
   length="$(secret_requirement "$key")"
-  if command -v openssl >/dev/null 2>&1; then
-    case "$key" in
-      *_ENCRYPTION_KEY) openssl rand -base64 33 | tr -d '\n' ;;
-      *) openssl rand -hex $(( (length + 1) / 2 )) | cut -c1-"$length" ;;
-    esac
-  else
-    tr -dc 'A-Za-z0-9_-' < /dev/urandom | head -c "$length"
-  fi
+  case "$key" in
+    # 加密金鑰必須是「解碼後恰好 32 bytes」的 base64（AES-256 要求）
+    *_ENCRYPTION_KEY)
+      if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 32 | tr -d '\n'
+      else
+        base64 -w0 < <(head -c 32 /dev/urandom)
+      fi
+      ;;
+    *)
+      if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex $(( (length + 1) / 2 )) | cut -c1-"$length"
+      else
+        tr -dc 'A-Za-z0-9_-' < /dev/urandom | head -c "$length"
+      fi
+      ;;
+  esac
 }
 
 replace_env_value() {
@@ -153,7 +162,13 @@ wait_for_database 45
 
 "$SCRIPT_DIR/migrate.sh" "$environment"
 "$SCRIPT_DIR/seed.sh" "$environment"
-wait_for_api 45
+
+# API 在 migration 之前就已啟動，因此需要建立於 migration 中的結構
+# （例如 PII 加密欄位）的一次性資料搬遷尚未執行。重啟 API 讓它在
+# schema 就緒的狀態下完成這些啟動期任務。
+log "重啟 API 以套用 migration 後的啟動任務"
+compose restart api
+wait_for_api 60
 
 log "部署完成：$(grep '^FRONTEND_PORT=' "$ENV_FILE" | cut -d= -f2- || echo 3000)"
 log "查看狀態：${COMPOSE_COMMAND[*]} --env-file docker/.env -f docker/docker-compose.yml ps"

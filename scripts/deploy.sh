@@ -153,7 +153,51 @@ handle_secrets() {
   fail "偵測到弱敏感值：${weak_keys//$'\n'/, }。請使用 --auto-secrets、--skip-secrets，或更新 $ENV_FILE"
 }
 
+# env_value <key> → runtime env 中該鍵的值（去除引號與 CR）
+env_value() {
+  local value
+  value="$(grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2- || true)"
+  value="${value%$'\r'}"
+  value="${value#\"}"
+  value="${value%\"}"
+  printf '%s' "$value"
+}
+
+# 樣板值或本機位址出現在正式環境，代表 env 檔沒有填完
+looks_like_placeholder() {
+  local value="${1,,}"
+  [[ -z "$value" ]] && return 0
+  case "$value" in
+    *localhost*|*127.0.0.1*|*example.com*|*example.org*|*.test|*.test/*|*.test:*) return 0 ;;
+  esac
+  return 1
+}
+
+check_production_config() {
+  [[ "$environment" == "production" ]] || return 0
+  local problems=() key value
+
+  [[ "$(env_value SECURE_COOKIES)" == "true" ]] \
+    || problems+=("SECURE_COOKIES 必須為 true（正式站走 HTTPS，session cookie 需帶 Secure）")
+
+  for key in PUBLIC_BASE_URL CORS_ALLOWED_ORIGINS MAIL_FROM; do
+    value="$(env_value "$key")"
+    looks_like_placeholder "$value" && problems+=("$key 仍是樣板或本機值：${value:-（空白）}")
+  done
+
+  if (( ${#problems[@]} > 0 )); then
+    printf '[creditflow] error: production 設定不完整（%s）：\n' "$ENV_FILE" >&2
+    printf '  - %s\n' "${problems[@]}" >&2
+    exit 1
+  fi
+
+  # 不擋部署：缺 SMTP 只影響寄信，API 在 production 不會把信件內容寫入日誌
+  [[ -n "$(env_value SMTP_HOST)" ]] \
+    || log "警告：SMTP_HOST 未設定，驗證信與密碼重設信不會寄出（使用者將無法完成信箱驗證與申請）"
+}
+
 handle_secrets
+check_production_config
 log "驗證 Docker Compose 設定"
 compose config --quiet
 log "建置並啟動 $environment 環境"
@@ -161,7 +205,12 @@ compose up -d --build
 wait_for_database 45
 
 "$SCRIPT_DIR/migrate.sh" "$environment"
-"$SCRIPT_DIR/seed.sh" "$environment"
+# seed 只含展示帳號（密碼公開於 README）與假資料，正式環境絕不套用
+if [[ "$environment" == "production" ]]; then
+  log "production 不執行 seed"
+else
+  "$SCRIPT_DIR/seed.sh" "$environment"
+fi
 
 # API 在 migration 之前就已啟動，因此需要建立於 migration 中的結構
 # （例如 PII 加密欄位）的一次性資料搬遷尚未執行。重啟 API 讓它在

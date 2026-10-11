@@ -8,6 +8,9 @@ source "$SCRIPT_DIR/_common.sh"
 
 environment="${1:-}"
 [[ -n "$environment" ]] || fail "用法：./scripts/seed.sh <develop|production>"
+# seed 會建立密碼公開的展示帳號（含 reviewer）並在每次執行時重設其密碼與餘額，
+# 套用到正式環境等同開放風控後台給所有人。
+[[ "$environment" != "production" ]] || fail "seed 僅供展示環境，不可套用到 production"
 require_docker_compose
 require_environment "$environment"
 prepare_env_file

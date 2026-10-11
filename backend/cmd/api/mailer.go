@@ -11,9 +11,12 @@ import (
 
 // 寄信用於 email 驗證與密碼重設。
 //
-// 未設定 SMTP_HOST 時不寄信，改把內容寫進日誌：
+// 未設定 SMTP_HOST 時不寄信，非 production 環境改把內容寫進日誌：
 // 本機開發不該因為缺少郵件伺服器而無法測試整個流程。
 // develop 環境的 compose 會啟動 MailHog，因此預設就有可用的收件端。
+//
+// production 絕不記錄信件內容：內文含密碼重設 token，
+// 能讀日誌的人就能接管任何帳號。
 
 type mailer struct {
 	host string
@@ -22,16 +25,23 @@ type mailer struct {
 	// 寄信逾時。SMTP 連線卡住不該讓 HTTP 請求一起卡住。
 	timeout time.Duration
 	logger  *slog.Logger
+	// 未設定 SMTP 時是否把信件內文寫進日誌。零值（false）為安全預設。
+	logBodies bool
 }
 
-func newMailer(logger *slog.Logger) *mailer {
-	return &mailer{
-		host:    strings.TrimSpace(env("SMTP_HOST", "")),
-		port:    env("SMTP_PORT", "1025"),
-		from:    env("MAIL_FROM", "no-reply@creditflow.test"),
-		timeout: time.Duration(envInt("SMTP_TIMEOUT_SECONDS", 10)) * time.Second,
-		logger:  logger,
+func newMailer(logger *slog.Logger, appEnv string) *mailer {
+	m := &mailer{
+		host:      strings.TrimSpace(env("SMTP_HOST", "")),
+		port:      env("SMTP_PORT", "1025"),
+		from:      env("MAIL_FROM", "no-reply@creditflow.test"),
+		timeout:   time.Duration(envInt("SMTP_TIMEOUT_SECONDS", 10)) * time.Second,
+		logger:    logger,
+		logBodies: !isProduction(appEnv),
 	}
+	if !m.enabled() && !m.logBodies {
+		logger.Error("SMTP_HOST is not set; verification and password reset emails will not be delivered")
+	}
+	return m
 }
 
 // enabled 回報是否真的會寄出信件。
@@ -45,6 +55,11 @@ func (m *mailer) enabled() bool {
 // （使用者可以重寄），但必須留下日誌以便排查。
 func (m *mailer) send(to, subject, body string) {
 	if !m.enabled() {
+		if !m.logBodies {
+			// 不記錄收件人與內文：前者是個資，後者含一次性 token
+			m.logger.Error("email not sent (SMTP_HOST is unset)", "subject", subject)
+			return
+		}
 		// 開發環境的替代路徑：把信件內容寫進日誌，流程仍可完整測試
 		m.logger.Info("email not sent (SMTP_HOST is unset); logging instead",
 			"to", to, "subject", subject, "body", body)

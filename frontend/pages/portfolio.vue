@@ -8,6 +8,8 @@ const { portfolio, distributions, loading, disbursedCount, realisedRatio, loadPo
 const { openModal, closeModal } = useModal()
 const { showToast } = useToast()
 const { refresh } = useAuth()
+// 入金未接金流，只在展示模式開放（後端在 production 也會拒絕）
+const { demoMode } = useRuntimeConfig().public
 
 await useAsyncData('portfolio', async () => {
   await loadPortfolio()
@@ -57,7 +59,7 @@ function openTopUpModal() {
         </div>
         <div class="page-actions">
           <NuxtLink class="btn" to="/market">前往市集</NuxtLink>
-          <button class="btn primary" type="button" @click="openTopUpModal">入金</button>
+          <button v-if="demoMode" class="btn primary" type="button" @click="openTopUpModal">入金</button>
         </div>
       </div>
 
@@ -177,7 +179,7 @@ function openTopUpModal() {
         <p class="card-note">
           預估收益假設借款人如期履約至最後一期。借款人若提前清償，未到期利息會被免除，
           實際收益將低於估算值。逾期與違約亦會影響實收金額。
-          本平台尚未接金流閘道，入金與投標皆為展示用途。
+          <template v-if="demoMode">本平台尚未接金流閘道，入金與投標皆為展示用途。</template>
         </p>
       </article>
     </div>

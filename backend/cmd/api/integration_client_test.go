@@ -178,13 +178,14 @@ func createUser(t *testing.T, email, displayName, role string, creditScore int) 
 	}
 
 	userID := fmt.Sprintf("usr_test_%s", sanitizeForID(email))
+	// fixture 代表已驗證信箱的既有帳號；需要未驗證狀態的測試自行清除 email_verified_at
 	if _, err := testPool.Exec(testContext(t), `
-		INSERT INTO users (id, email, password_hash, display_name, role, credit_score)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO users (id, email, password_hash, display_name, role, credit_score, email_verified_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			email = EXCLUDED.email, password_hash = EXCLUDED.password_hash,
 			display_name = EXCLUDED.display_name, role = EXCLUDED.role,
-			credit_score = EXCLUDED.credit_score
+			credit_score = EXCLUDED.credit_score, email_verified_at = EXCLUDED.email_verified_at
 	`, userID, email, hash, displayName, role, creditScore); err != nil {
 		t.Fatalf("create user %s: %v", email, err)
 	}

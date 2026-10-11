@@ -138,11 +138,9 @@ expect_code "匿名可讀募資市集" 200 "$(code_of "$result")"
 is_array="$(json_get "$(body_of "$result")" 'isinstance(d, list)')"
 [[ "$is_array" == "True" ]] && ok "市集回傳陣列" || bad "市集回應格式非陣列"
 
-# 舊的 market_listings 端點仍存在但已停用所有列（migration 005 標記為 legacy）
+# 舊的 market_listings 靜態展示端點已移除（資料表保留供回滾）
 result="$(request GET /v1/market/listings "$ANON_JAR")"
-expect_code "legacy 市集端點仍可存取" 200 "$(code_of "$result")"
-legacy_count="$(json_get "$(body_of "$result")" 'len(d)')"
-[[ "${legacy_count:-x}" == "0" ]] && ok "legacy 靜態標的已停用（0 筆）" || bad "legacy 仍有 ${legacy_count:-?} 筆啟用中"
+expect_code "legacy 市集端點已移除" 404 "$(code_of "$result")"
 
 step "3. 登入流程"
 result="$(request POST /v1/auth/login "$BORROWER_JAR" '{"email":"demo@creditflow.test","password":"wrong-password"}')"

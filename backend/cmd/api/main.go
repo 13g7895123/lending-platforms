@@ -46,8 +46,10 @@ type apiServer struct {
 	mailer         *mailer
 	// 信件中連結使用的對外網址（瀏覽器可達的位址，非容器內位址）
 	publicBaseURL string
-	limiter       *rateLimiter
-	authLimiter   *rateLimiter
+	// 展示用入金（未接金流）。production 一律關閉，否則任何出借人都能憑空增加餘額
+	topUpEnabled bool
+	limiter      *rateLimiter
+	authLimiter  *rateLimiter
 }
 
 // dbExecutor 讓同一段邏輯可在連線池或交易中執行。
@@ -87,19 +89,6 @@ type dashboardResponse struct {
 		RepaymentRate  float64 `json:"repaymentRate"`
 	} `json:"summary"`
 	Loans []loan `json:"loans"`
-}
-
-type listing struct {
-	ID      string  `json:"id"`
-	Purpose string  `json:"purpose"`
-	Grade   string  `json:"grade"`
-	Rate    float64 `json:"rate"`
-	Amount  int64   `json:"amount"`
-	Term    int     `json:"term"`
-	Funded  int     `json:"funded"`
-	Job     string  `json:"job"`
-	Years   string  `json:"years"`
-	Region  string  `json:"region"`
 }
 
 type applicationRequest struct {
@@ -156,8 +145,9 @@ func main() {
 		trustProxy:     cfg.trustProxy,
 		pii:            pii,
 		storage:        storage,
-		mailer:         newMailer(logger),
+		mailer:         newMailer(logger, cfg.appEnv),
 		publicBaseURL:  cfg.publicBaseURL,
+		topUpEnabled:   !isProduction(cfg.appEnv),
 		limiter:        newRateLimiter(cfg.rateLimitPerMinute, cfg.rateLimitPerMinute, time.Minute),
 		authLimiter:    newRateLimiter(cfg.authRateLimitPerMinute, cfg.authRateLimitPerMinute, time.Minute),
 	}
@@ -199,6 +189,11 @@ func main() {
 		logger.Error("http server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// isProduction 回報是否為正式環境。展示用功能與不安全的替代路徑都以此關閉。
+func isProduction(appEnv string) bool {
+	return strings.EqualFold(strings.TrimSpace(appEnv), "production")
 }
 
 func loadConfig() config {
@@ -285,7 +280,6 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/verify-email", s.verifyEmail)
 	mux.HandleFunc("/v1/auth/forgot-password", s.rateLimitAuth("forgot", s.forgotPassword))
 	mux.HandleFunc("/v1/auth/reset-password", s.rateLimitAuth("reset", s.resetPassword))
-	mux.HandleFunc("/v1/market/listings", s.marketListings)
 	mux.HandleFunc("/v1/listings", s.optionalAuth(s.marketplaceListings))
 
 	// 需登入
@@ -358,41 +352,6 @@ func (s *apiServer) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "ready"})
-}
-
-func (s *apiServer) marketListings(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	rows, err := s.db.Query(ctx, `
-		SELECT id, purpose, grade, annual_rate, amount, term_months, funded_percent, job, employment_years, region
-		FROM market_listings
-		WHERE active = TRUE
-		ORDER BY grade, annual_rate, id
-	`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load market listings")
-		return
-	}
-	defer rows.Close()
-
-	items := make([]listing, 0)
-	for rows.Next() {
-		var item listing
-		if err := rows.Scan(&item.ID, &item.Purpose, &item.Grade, &item.Rate, &item.Amount, &item.Term, &item.Funded, &item.Job, &item.Years, &item.Region); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to decode market listings")
-			return
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read market listings")
-		return
-	}
-	writeJSON(w, http.StatusOK, items)
 }
 
 func validateApplication(request applicationRequest) error {

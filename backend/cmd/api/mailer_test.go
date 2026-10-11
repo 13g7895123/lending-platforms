@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"strings"
@@ -93,6 +94,45 @@ func TestMailerDisabledWithoutHost(t *testing.T) {
 	}
 	// 不應 panic；內容改寫進日誌
 	m.send("someone@example.com", "主旨", "內容")
+}
+
+// production 未設 SMTP 時，信件內文（含重設 token）與收件人都不可進入日誌。
+func TestMailerWithoutHostLogsBodiesOnlyOutsideProduction(t *testing.T) {
+	const token = "reset-token-must-not-leak"
+	tests := []struct {
+		appEnv   string
+		wantBody bool
+	}{
+		{"production", false},
+		{"PRODUCTION", false},
+		{"develop", true},
+	}
+	for _, test := range tests {
+		t.Run(test.appEnv, func(t *testing.T) {
+			var output bytes.Buffer
+			t.Setenv("SMTP_HOST", "")
+			m := newMailer(slog.New(slog.NewTextHandler(&output, nil)), test.appEnv)
+			m.send("victim@example.com", "重設密碼", "連結 https://x/reset?token="+token)
+
+			logged := output.String()
+			if got := strings.Contains(logged, token); got != test.wantBody {
+				t.Errorf("token in log = %v, want %v; log: %s", got, test.wantBody, logged)
+			}
+			if got := strings.Contains(logged, "victim@example.com"); got != test.wantBody {
+				t.Errorf("recipient in log = %v, want %v", got, test.wantBody)
+			}
+		})
+	}
+}
+
+// 直接建構的 mailer（零值）必須是安全的一側。
+func TestMailerZeroValueDoesNotLogBodies(t *testing.T) {
+	var output bytes.Buffer
+	m := &mailer{logger: slog.New(slog.NewTextHandler(&output, nil))}
+	m.send("someone@example.com", "主旨", "secret-body")
+	if strings.Contains(output.String(), "secret-body") {
+		t.Errorf("zero-value mailer logged the body: %s", output.String())
+	}
 }
 
 func TestVerificationEmailContainsUsableLink(t *testing.T) {

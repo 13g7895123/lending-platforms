@@ -61,10 +61,6 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .btn.primary:hover { box-shadow: 0 10px 27px rgba(44, 104, 222, .45); }
 .btn.small { min-height: 44px; padding: 6px 11px; border-radius: 8px; font-size: 12px; }
 .btn.full { width: 100%; }
-.trust-stats { display: flex; gap: 34px; margin-top: 42px; flex-wrap: wrap; }
-.trust-stats strong, .trust-stats small { display: block; }
-.trust-stats strong { font-size: 21px; letter-spacing: -.03em; }
-.trust-stats small { margin-top: 1px; color: var(--muted); font-size: 11.5px; }
 
 .calculator-card { padding: 27px; border: 1px solid var(--line); border-radius: 19px; background: linear-gradient(155deg, var(--surface-raised), var(--surface)); box-shadow: var(--shadow); }
 .card-heading, .card-title-row, .page-intro, .range-label, .range-hints, .output-row, .listing-heading, .listing-row, .funding > div, .repay-banner, .activity-list > div, .reminder-list > div, .metric-list > div, .alert-item { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -351,7 +347,6 @@ tbody tr:hover { background: rgba(255, 255, 255, .025); }
   .page { padding-top: 30px; }
   .brand small { display: none; }
   .hero-copy h1 { font-size: 36px; }
-  .trust-stats { gap: 17px; }
   .feature-grid, .kpi-grid, .listing-grid, .form-grid { grid-template-columns: 1fr; }
   .full-field { grid-column: auto; }
   .form-card, .surface-card, .calculator-card { padding: 17px; }

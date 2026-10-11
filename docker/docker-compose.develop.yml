@@ -16,6 +16,11 @@ services:
       mailhog:
         condition: service_started
 
+  frontend:
+    environment:
+      # 登入頁顯示 seed 建立的展示帳號，並開放展示用入金
+      NUXT_PUBLIC_DEMO_MODE: "true"
+
   # 攔截所有寄出的信件並提供 HTTP API 讀取。
   # 僅在 develop 啟動：正式環境應指向真實的 SMTP 服務。
   mailhog:

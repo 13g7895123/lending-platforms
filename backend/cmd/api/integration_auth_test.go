@@ -190,10 +190,16 @@ func TestIntegrationAuthorizationBoundaries(t *testing.T) {
 		})
 	}
 
-	// 市集為公開資料，匿名仍須可讀（相容性保證）
+	// 市集為公開資料，匿名仍須可讀
 	t.Run("market listings stay public", func(t *testing.T) {
-		anonymous.do(http.MethodGet, "/v1/market/listings", nil).
+		anonymous.do(http.MethodGet, "/v1/listings", nil).
 			expectStatus(t, http.StatusOK, "market listings")
+	})
+
+	// legacy 靜態市集端點已移除（資料由 /v1/listings 取代）
+	t.Run("legacy market endpoint is gone", func(t *testing.T) {
+		anonymous.do(http.MethodGet, "/v1/market/listings", nil).
+			expectStatus(t, http.StatusNotFound, "legacy market listings")
 	})
 }
 

@@ -36,16 +36,17 @@ const form = reactive({
   product: '個人信用貸款',
   amount: Number.isFinite(presetAmount) && presetAmount >= 50000 ? presetAmount : 500000,
   term: allowedTerms.includes(presetTerm) ? presetTerm : 36,
-  purpose: '債務整合',
+  // 用途與財務欄位不預填：預設值若被直接送出，會成為不實的授信資料
+  purpose: '',
   name: user.value?.displayName ?? '',
   idNumber: '',
   phone: '',
   email: user.value?.email ?? '',
-  job: '上市櫃公司員工',
-  years: '3~5 年',
-  income: 1080000,
-  expenses: 32000,
-  housing: '自有有貸款',
+  job: '',
+  years: '',
+  income: null as number | null,
+  expenses: null as number | null,
+  housing: '',
   note: '',
 })
 
@@ -81,9 +82,36 @@ const reviewRows = computed<ModalRow[]>(() => [
  * 進入文件步驟前先建立申請，讓上傳有對象可附。
  * 已建立過就直接前進，避免重複送出。
  */
+/** 第一步只需確認用途；金額與期數有預設且由欄位限制範圍。 */
+function goToProfile() {
+  if (!form.purpose) {
+    showToast('請選擇資金用途', 'error')
+    return
+  }
+  step.value = 2
+}
+
+/** 未填的欄位名稱，供提示使用。 */
+function missingProfileFields() {
+  const missing: string[] = []
+  if (!form.name.trim()) missing.push('姓名')
+  if (!form.email.trim()) missing.push('電子信箱')
+  if (!form.job) missing.push('職業')
+  if (!form.years) missing.push('年資')
+  if (!form.income || form.income <= 0) missing.push('年收入')
+  if (form.expenses === null || form.expenses < 0) missing.push('每月固定支出')
+  if (!form.housing) missing.push('居住狀況')
+  return missing
+}
+
 async function goToDocuments() {
   if (applicationId.value) {
     step.value = 3
+    return
+  }
+  const missing = missingProfileFields()
+  if (missing.length > 0) {
+    showToast(`請填寫：${missing.join('、')}`, 'error')
     return
   }
   creatingDraft.value = true
@@ -114,8 +142,8 @@ function applicationPayload() {
     email: form.email,
     job: form.job,
     employmentYears: form.years,
-    annualIncome: form.income,
-    monthlyExpenses: form.expenses,
+    annualIncome: form.income ?? 0,
+    monthlyExpenses: form.expenses ?? 0,
     housing: form.housing,
     note: form.note,
     documents: [],
@@ -199,6 +227,7 @@ function startOver() {
           <div class="field">
             <label for="app-purpose">資金用途</label>
             <select id="app-purpose" v-model="form.purpose">
+              <option value="" disabled>請選擇</option>
               <option>債務整合</option><option>裝潢修繕</option><option>創業／營運週轉</option>
               <option>教育進修</option><option>醫療支出</option><option>其他</option>
             </select>
@@ -220,7 +249,7 @@ function startOver() {
           <div><span>負債比試算</span><b>{{ dbr.toFixed(1) }}%</b></div>
         </div>
         <div class="form-actions end">
-          <button class="btn primary" type="button" @click="step = 2">下一步 <span>→</span></button>
+          <button class="btn primary" type="button" @click="goToProfile">下一步 <span>→</span></button>
         </div>
       </article>
 
@@ -234,6 +263,7 @@ function startOver() {
           <div class="field">
             <label for="app-job">職業</label>
             <select id="app-job" v-model="form.job">
+              <option value="" disabled>請選擇</option>
               <option>軍公教</option><option>上市櫃公司員工</option><option>一般企業員工</option>
               <option>自營商／SOHO</option><option>自由工作者</option>
             </select>
@@ -241,6 +271,7 @@ function startOver() {
           <div class="field">
             <label for="app-years">年資</label>
             <select id="app-years" v-model="form.years">
+              <option value="" disabled>請選擇</option>
               <option>未滿 1 年</option><option>1~3 年</option><option>3~5 年</option><option>5 年以上</option>
             </select>
           </div>
@@ -249,6 +280,7 @@ function startOver() {
           <div class="field full-field">
             <label for="app-housing">居住狀況</label>
             <select id="app-housing" v-model="form.housing">
+              <option value="" disabled>請選擇</option>
               <option>自有無貸款</option><option>自有有貸款</option><option>租屋</option><option>與父母同住</option>
             </select>
           </div>

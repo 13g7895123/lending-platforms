@@ -72,7 +72,28 @@ production 部署：
 ./scripts/deploy.sh production --auto-secrets
 ```
 
-正式環境建議先編輯 `docker/envs/.env.production`，填入正式網域與自行管理的強密鑰。若要手動執行資料庫流程：
+正式環境建議先編輯 `docker/envs/.env.production`，填入正式網域與自行管理的強密鑰。
+production 部署與 develop 的差異：
+
+- **不執行 seed**（`seed.sh production` 也會直接拒絕）：seed 只含密碼公開的展示帳號與假資料
+- 部署前檢查設定：`SECURE_COOKIES` 必須為 `true`，`PUBLIC_BASE_URL`、`CORS_ALLOWED_ORIGINS`、
+  `MAIL_FROM` 不可是樣板值（`example.com`、`.test`）或本機位址，否則部署失敗；
+  `SMTP_HOST` 未設定只警告（信件不會寄出）
+- API 固定 `APP_ENV=production`：缺 PII 金鑰拒絕啟動、關閉展示用入金、不把信件內容寫入日誌
+- 前端關閉展示模式（`NUXT_PUBLIC_DEMO_MODE`）：不顯示展示帳號、模擬數據說明與入金按鈕
+
+曾以舊版部署（舊版 production 也會跑 seed）的資料庫，用下列腳本停用展示帳號並移除假資料：
+
+```bash
+./scripts/disable-demo-accounts.sh production          # 盤點（dry-run，不修改）
+./scripts/disable-demo-accounts.sh production --apply  # 執行
+```
+
+帳號採停用而非刪除（作廢密碼與信箱、撤銷 session、餘額歸零），避免 cascade 刪掉真實使用者的資料。
+若真實出借人投過展示標的 `LT-2026-000520`，腳本不會刪它，
+需由正式的 reviewer 以 `POST /v1/admin/listings/LT-2026-000520/cancel` 原額退款。
+
+若要手動執行資料庫流程：
 
 ```bash
 ./scripts/migrate.sh develop
@@ -112,7 +133,7 @@ develop 環境的展示帳號（由 `backend/seed/000_demo_users.sql` 建立）�
 | 出借人 | `investor@creditflow.test` | `invest1234` | 預先入金 200 萬 |
 | 風控人員 | `reviewer@creditflow.test` | `review1234` | |
 
-> 這些帳號僅供本機展示，請勿套用到正式環境。
+> 這些帳號僅供本機展示。production 部署不會執行 seed，登入頁也只在展示模式顯示這些帳號。
 
 ## 授信規則
 
@@ -143,7 +164,6 @@ develop 環境的展示帳號（由 `backend/seed/000_demo_users.sql` 建立）�
 - `POST /v1/auth/reset-password`：以 token 設定新密碼並撤銷所有 session
 - `GET /v1/listings`：募資中的標的（`?status=funding|funded|disbursed|all`）；
   登入時會附帶「我已投入多少」
-- `GET /v1/market/listings`：legacy 端點，已停用所有列
 
 需登入：
 
@@ -165,7 +185,7 @@ develop 環境的展示帳號（由 `backend/seed/000_demo_users.sql` 建立）�
 
 - `POST /v1/listings/{id}/invest`：投標（`amount` + 選用 `requestId` 作冪等鍵）
 - `GET /v1/investments`：持倉、餘額、加權平均年化與預估收益
-- `POST /v1/investments/top-up`：入金（展示用，未接金流）
+- `POST /v1/investments/top-up`：入金（展示用，未接金流；`APP_ENV=production` 時回 403）
 - `GET /v1/investments/distributions`：收款明細（每筆還款分得的本金與利息）
 
 需 `reviewer` 角色：
@@ -203,10 +223,10 @@ develop 環境的展示帳號（由 `backend/seed/000_demo_users.sql` 建立）�
 - 撥款沿用 `createLoanFromApplication`，確保攤還表計算只有一處實作
 
 出借人餘額為簡化模型：`users.available_balance` 單一欄位，
-入金端點直接增加餘額。**未接任何金流閘道**。
+入金端點直接增加餘額。**未接任何金流閘道**，因此入金只在非 production 環境開放。
 
 舊的 `market_listings` 靜態展示資料已由 `listings` 取代，
-migration 005 將其標記為 legacy 並停用所有列（保留資料表供回滾）。
+migration 005 將其標記為 legacy 並停用所有列；對應的 `/v1/market/listings` 端點已移除（資料表保留供回滾）。
 
 ## 檔案上傳
 
@@ -396,7 +416,8 @@ due       --(繳款日過期)--> overdue --(補繳)--> paid
 ### 郵件
 
 以標準庫 `net/smtp` 寄送，不新增依賴。`SMTP_HOST` 留空時**不寄信而是寫入日誌**，
-讓沒有郵件伺服器的環境仍能測試完整流程。
+讓沒有郵件伺服器的環境仍能測試完整流程。production 只記錄「未寄出」與主旨，
+**不記錄收件人與內文**（內文含密碼重設 token）。
 
 develop 環境的 compose 會啟動 **MailHog**（SMTP sink + HTTP API），
 因此端到端驗證能真的收信、取出連結並走完流程，而非假設它會動：

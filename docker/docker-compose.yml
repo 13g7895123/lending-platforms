@@ -69,6 +69,8 @@ services:
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://api:8080}
       NUXT_BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://api:8080}
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-/api}
+      # 展示模式（展示帳號、模擬數據說明、展示用入金）。正式環境保持 false
+      NUXT_PUBLIC_DEMO_MODE: "false"
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:

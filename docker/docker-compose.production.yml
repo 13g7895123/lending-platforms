@@ -6,6 +6,10 @@ services:
 
   api:
     restart: always
+    environment:
+      # 固定為 production，不受 env 檔漏設影響：
+      # 缺 PII 金鑰拒絕啟動、關閉展示用入金、不把信件內容寫入日誌
+      APP_ENV: production
 
   frontend:
     restart: always

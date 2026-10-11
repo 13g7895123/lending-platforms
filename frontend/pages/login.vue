@@ -3,6 +3,7 @@ const route = useRoute()
 const { user, isInvestor, isReviewer, login, register } = useAuth()
 const { showToast } = useToast()
 const { loadDashboard, loadApplications } = useDashboard()
+const { demoMode } = useRuntimeConfig().public
 
 useHead({ title: '登入 · CreditFlow' })
 
@@ -186,7 +187,7 @@ async function submit() {
           </template>
         </p>
 
-        <div class="demo-hint">
+        <div v-if="demoMode" class="demo-hint">
           <strong>展示帳號</strong>
           <span>借款人：demo@creditflow.test / demo1234</span>
           <span>出借人：investor@creditflow.test / invest1234</span>

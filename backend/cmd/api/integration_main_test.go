@@ -164,6 +164,9 @@ func newTestAPIServer(t *testing.T) *apiServer {
 		trustProxy:     false,
 		pii:            cipher,
 		storage:        storage,
+		topUpEnabled:   true,
+		// 未設 SMTP 的 mailer：不寄信。測試從資料庫讀 token，不依賴信件內容
+		mailer: &mailer{logger: discardLogger()},
 		// 限流設高，避免一般測試誤觸；限流本身另有專屬測試
 		limiter:     newRateLimiter(10000, 10000, time.Minute),
 		authLimiter: newRateLimiter(10000, 10000, time.Minute),

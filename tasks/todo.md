@@ -1401,3 +1401,64 @@ MailHog 提供 SMTP sink 與 HTTP API，因此端到端可以真的收信、
 單元測試守住三個不變量：時長單調遞增、有上限、門檻設定合理
 （第一道門檻不可低於 3 次——會困擾正常使用者；不可高於 10 次——失去防護意義）。
 整合測試特別驗證「不洩漏帳號存在性」：比對存在與不存在帳號的狀態碼與回應主體。
+
+---
+
+# 2026-10-11 正式站移除展示內容與不安全預設
+
+## 目標
+正式站（`deploy.sh production`）不再出現展示帳號、假資料、假統計與展示用功能；
+不安全的預設值在 production 直接擋下。develop 的展示體驗（展示帳號、入金、verify-flow）保持不變。
+
+## 風險等級
+**高**（auth、金流入口、資料清理）
+- 影響元件：scripts/deploy.sh、scripts/seed.sh、docker compose、backend（top-up、mailer、legacy 路由）、frontend（login/index/footer/portfolio/apply/admin）
+- 回滾：程式碼 `git revert`；正式站資料清理以 `scripts/disable-demo-accounts.sh` 執行，預設 dry-run，
+  `--apply` 只停用帳號（作廢密碼雜湊、撤銷 session、餘額歸零）並刪除 seed 寫入的固定 id 資料，不 cascade 刪除使用者
+
+## 項目
+- [x] 1/3 seed 不在 production 執行（deploy.sh 跳過、seed.sh 拒絕）
+- [x] 1 既有正式站資料：新增 disable-demo-accounts.sh（dry-run 預設）；含漏盤的展示標的 LT-2026-000520
+- [x] 2 登入頁展示帳號只在 demo mode 顯示（NUXT_PUBLIC_DEMO_MODE，develop 開啟）
+- [x] 4 top-up 端點在 APP_ENV=production 停用；前端在非 demo mode 隱藏入金
+- [x] 5 mailer：production 未設 SMTP 時不把信件內容（含 token）寫入日誌
+- [x] 7 首頁移除無根據的統計數字
+- [x] 8 頁尾移除「模擬數據」字樣（非 demo mode）與假客服電話
+- [x] 9 「AI 智慧風控」「AI 建議」改為與實作相符的用詞
+- [x] 10 portfolio 展示用文案隨入金一併隱藏
+- [x] 11 申請表單財務欄位不再預填
+- [x] 12/13 production compose 固定 APP_ENV=production；deploy.sh 檢查 SECURE_COOKIES、placeholder 網址、SMTP
+- [x] 14 正式映像不打包 seed
+- [x] 15 移除 legacy `/v1/market/listings`
+- [x] Verify：gofmt / go vet / go test / 整合測試 / nuxt typecheck / nuxt build / bash -n / deploy 檢查邏輯手動測試
+
+## Results
+
+### 變更
+- `scripts/deploy.sh`：production 不跑 seed；新增 `check_production_config`（SECURE_COOKIES、placeholder 網址、SMTP 警告）
+- `scripts/seed.sh`：拒絕 production
+- `scripts/disable-demo-accounts.sh`（新）：盤點／停用展示帳號、刪除 seed 固定 id 資料；有真實使用者痕跡者只列出
+- `docker/docker-compose.production.yml`：API 固定 `APP_ENV=production`
+- `docker/docker-compose*.yml`：`NUXT_PUBLIC_DEMO_MODE`（base=false、develop=true）
+- `backend/Dockerfile`：不再打包 seed
+- backend：`isProduction()`；`topUpEnabled`（production 回 403）；mailer `logBodies`（零值安全）；移除 `/v1/market/listings`
+- frontend：登入頁展示帳號、頁尾模擬數據、持倉頁入金與展示說明皆受 demoMode 控制；
+  移除首頁假統計與假客服電話；「AI 智慧風控／AI 建議」改為「一致的風控標準／系統建議」；
+  申請表單用途與財務欄位不預填並於前端檢查
+- 既有測試修復（驗證本次改動所必需）：整合測試 server 補 mailer、`createUser` 標記信箱已驗證
+
+### 驗證
+- `gofmt -l` 無輸出；`go vet`（含 integration tag）通過；`go test -race ./...` ok
+- 整合測試（臨時 postgres:16）`go test -tags=integration -race` ok（188 個頂層測試）；
+  修復前基線 55 失敗，與本次改動無關（stash 比對）
+- 新增單元測試：`TestTopUpRejectedWhenDisabled`、`TestIsProduction`、
+  `TestMailerWithoutHostLogsBodiesOnlyOutsideProduction`、`TestMailerZeroValueDoesNotLogBodies`
+- `nuxt typecheck`、`nuxt build` 通過；以 build 產物分別用 DEMO_MODE=false/true 啟動，SSR 輸出比對符合預期
+- `check_production_config` 以 5 組 env 檔測試（樣板、缺 SMTP、完整、錯誤值、develop）
+- `disable-demo-accounts.sh` 於臨時 DB 測試：情境 A（真實使用者痕跡）保留並列出、無 FK 錯誤；
+  情境 B（僅 seed）全部清除；重跑冪等
+- develop 重新部署後 `verify-flow.sh`：通過 214 ／ 失敗 0
+
+### 未執行（需使用者操作）
+- 正式站：更新 `.env.production` → `./scripts/deploy.sh production` →
+  `./scripts/disable-demo-accounts.sh production`（先 dry-run 再 `--apply`）

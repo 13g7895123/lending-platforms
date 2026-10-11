@@ -517,10 +517,14 @@ const maxTopUpAmount = 10000000
 // topUpBalance 為出借人帳戶入金。
 //
 // 展示用端點：真實平台必須接金流閘道並核對入帳，此處直接增加餘額。
-// 已在 README 標註為未接金流。
+// 因此只在非 production 環境開放（見 apiServer.topUpEnabled）。
 func (s *apiServer) topUpBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !s.topUpEnabled {
+		writeError(w, http.StatusForbidden, "top-up is not available until a payment gateway is integrated")
 		return
 	}
 	actor := currentUser(r)

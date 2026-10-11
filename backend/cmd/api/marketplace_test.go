@@ -1,9 +1,41 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// 入金未接金流，正式環境必須拒絕；拒絕要發生在讀取請求與寫入資料庫之前。
+func TestTopUpRejectedWhenDisabled(t *testing.T) {
+	server := &apiServer{topUpEnabled: false}
+	request := httptest.NewRequest(http.MethodPost, "/v1/investments/top-up",
+		strings.NewReader(`{"amount":1000}`))
+	recorder := httptest.NewRecorder()
+
+	server.topUpBalance(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestIsProduction(t *testing.T) {
+	tests := map[string]bool{
+		"production":   true,
+		"Production":   true,
+		" production ": true,
+		"develop":      false,
+		"":             false,
+		"prod":         false,
+	}
+	for input, want := range tests {
+		if got := isProduction(input); got != want {
+			t.Errorf("isProduction(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
 
 func TestFundedPercent(t *testing.T) {
 	tests := []struct {

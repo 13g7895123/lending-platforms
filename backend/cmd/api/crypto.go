@@ -147,7 +147,7 @@ func loadPIICipher(cfg config, logger *slog.Logger) (*piiCipher, error) {
 	if cfg.piiKey != "" {
 		return newPIICipher(cfg.piiKey)
 	}
-	if strings.EqualFold(cfg.appEnv, "production") {
+	if isProduction(cfg.appEnv) {
 		return nil, errors.New(
 			"PII_ENCRYPTION_KEY must be set in production; generate one with scripts/deploy.sh --auto-secrets")
 	}

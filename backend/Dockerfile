@@ -18,7 +18,6 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY --from=build /out/creditflow-api ./creditflow-api
 COPY backend/migrations ./migrations
-COPY backend/seed ./seed
 
 # 文件儲存目錄需在映像中先建立並歸屬給執行身分。
 # Docker 掛載具名 volume 時會沿用掛載點在映像中的擁有者與權限；

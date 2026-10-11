@@ -52,7 +52,7 @@ function openReviewModal(item: ApplicationSummary, action: ReviewAction) {
       { label: '期數 / 等級', value: `${item.termMonths} 期 · ${item.grade} 級` },
       { label: '預估月付金', value: formatNT(item.estimatedPayment), tone: 'brand-text' },
       { label: 'DBR', value: `${item.dbr.toFixed(1)}%` },
-      { label: 'AI 建議', value: item.recommendation, tone: item.recommendTone },
+      { label: '系統建議', value: item.recommendation, tone: item.recommendTone },
     ],
     confirmLabel: `確認${label}`,
     // 婉拒與補件必須說明原因，核准則可留白

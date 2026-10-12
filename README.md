@@ -76,9 +76,8 @@ production 部署：
 production 部署與 develop 的差異：
 
 - **不執行 seed**（`seed.sh production` 也會直接拒絕）：seed 只含密碼公開的展示帳號與假資料
-- 部署前檢查設定：`SECURE_COOKIES` 必須為 `true`，`PUBLIC_BASE_URL`、`CORS_ALLOWED_ORIGINS`、
-  `MAIL_FROM` 不可是樣板值（`example.com`、`.test`）或本機位址，否則部署失敗；
-  `SMTP_HOST` 未設定只警告（信件不會寄出）
+- 部署前檢查 `SECURE_COOKIES` 必須為 `true`，否則部署失敗。
+  寄信相關設定不檢查：未設 `SMTP_HOST` 時信件不會寄出
 - API 固定 `APP_ENV=production`：缺 PII 金鑰拒絕啟動、關閉展示用入金、不把信件內容寫入日誌
 - 前端關閉展示模式（`NUXT_PUBLIC_DEMO_MODE`）：不顯示展示帳號、模擬數據說明與入金按鈕
 

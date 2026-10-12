@@ -163,37 +163,13 @@ env_value() {
   printf '%s' "$value"
 }
 
-# 樣板值或本機位址出現在正式環境，代表 env 檔沒有填完
-looks_like_placeholder() {
-  local value="${1,,}"
-  [[ -z "$value" ]] && return 0
-  case "$value" in
-    *localhost*|*127.0.0.1*|*example.com*|*example.org*|*.test|*.test/*|*.test:*) return 0 ;;
-  esac
-  return 1
-}
-
+# 只檢查會直接影響安全性的設定。
+# 寄信相關的值（PUBLIC_BASE_URL、MAIL_FROM、SMTP_*）只用於信件，
+# CORS_ALLOWED_ORIGINS 在同源 proxy 架構下不影響功能，皆不擋部署。
 check_production_config() {
   [[ "$environment" == "production" ]] || return 0
-  local problems=() key value
-
   [[ "$(env_value SECURE_COOKIES)" == "true" ]] \
-    || problems+=("SECURE_COOKIES 必須為 true（正式站走 HTTPS，session cookie 需帶 Secure）")
-
-  for key in PUBLIC_BASE_URL CORS_ALLOWED_ORIGINS MAIL_FROM; do
-    value="$(env_value "$key")"
-    looks_like_placeholder "$value" && problems+=("$key 仍是樣板或本機值：${value:-（空白）}")
-  done
-
-  if (( ${#problems[@]} > 0 )); then
-    printf '[creditflow] error: production 設定不完整（%s）：\n' "$ENV_FILE" >&2
-    printf '  - %s\n' "${problems[@]}" >&2
-    exit 1
-  fi
-
-  # 不擋部署：缺 SMTP 只影響寄信，API 在 production 不會把信件內容寫入日誌
-  [[ -n "$(env_value SMTP_HOST)" ]] \
-    || log "警告：SMTP_HOST 未設定，驗證信與密碼重設信不會寄出（使用者將無法完成信箱驗證與申請）"
+    || fail "SECURE_COOKIES 必須為 true（正式站走 HTTPS，session cookie 需帶 Secure）：$ENV_FILE"
 }
 
 handle_secrets

@@ -1462,3 +1462,8 @@ MailHog 提供 SMTP sink 與 HTTP API，因此端到端可以真的收信、
 ### 未執行（需使用者操作）
 - 正式站：更新 `.env.production` → `./scripts/deploy.sh production` →
   `./scripts/disable-demo-accounts.sh production`（先 dry-run 再 `--apply`）
+
+### 2026-10-12 調整：部署檢查不涵蓋寄信設定
+- 使用者決定正式站暫不寄信。`PUBLIC_BASE_URL`、`MAIL_FROM` 只用於信件，`CORS_ALLOWED_ORIGINS` 在同源 proxy 下不影響功能，
+  因此從 `check_production_config` 移除，SMTP 警告一併移除，只保留 `SECURE_COOKIES` 檢查
+- 驗證：樣板網址＋SECURE_COOKIES=true → 通過；SECURE_COOKIES=false → 失敗；develop → 不檢查
